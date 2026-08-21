@@ -55,7 +55,7 @@ def fetch_rentcast_data(city, state, min_price):
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_rapidapi_data(location, min_price):
     url = "https://real-time-real-estate-data.p.rapidapi.com/search"
-    querystring = {"location": location, "sort": "newest"}
+    querystring = {"location": location, "sort": "NEWEST"}
     headers = {"X-RapidAPI-Key": RAPIDAPI_KEY, "X-RapidAPI-Host": "real-time-real-estate-data.p.rapidapi.com"}
     
     try:
