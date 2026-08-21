@@ -1,16 +1,9 @@
 import streamlit as st
 import pandas as pd
 import requests
-from bs4 import BeautifulSoup
 
 # --- CONFIGURATION & SETUP ---
 st.set_page_config(page_title="High-Value B2B Lead Engine", page_icon="🏢", layout="wide")
-
-st.markdown("""
-    <style>
-    .stDataFrame { border-radius: 8px; overflow: hidden; }
-    </style>
-""", unsafe_allow_html=True)
 
 st.title("🏢 Tri-Engine B2B Real Estate Lead Pipeline")
 st.markdown("Automated aggregation from **RentCast**, **RapidAPI (MLS)**, and **Custom Web Scraping**.")
@@ -32,10 +25,16 @@ def fetch_rentcast_data(city, state, min_price):
     
     try:
         response = requests.get(url, params=params, headers=headers, timeout=15)
-        if response.status_code != 200: return pd.DataFrame()
+        if response.status_code != 200: 
+            # NOW EXPOSING THE ERROR DIRECTLY TO THE UI
+            st.error(f"🔴 RentCast API Failed: [Status {response.status_code}] {response.text}")
+            return pd.DataFrame()
+            
+        data = response.json()
+        st.info(f"*(Debug) RentCast API successfully pulled {len(data)} raw listings from the server.*")
         
         leads = []
-        for item in response.json():
+        for item in data:
             price = item.get("price", 0)
             if price >= min_price:
                 leads.append({
@@ -48,7 +47,8 @@ def fetch_rentcast_data(city, state, min_price):
                     "Price ($)": price
                 })
         return pd.DataFrame(leads)
-    except Exception:
+    except Exception as e:
+        st.error(f"🔴 RentCast Python Error: {e}")
         return pd.DataFrame()
 
 # --- ENGINE 2: RAPIDAPI (MLS RETAIL) ---
@@ -60,10 +60,14 @@ def fetch_rapidapi_data(location, min_price):
     
     try:
         response = requests.get(url, headers=headers, params=querystring, timeout=15)
-        if response.status_code != 200: return pd.DataFrame()
+        if response.status_code != 200: 
+            # NOW EXPOSING THE ERROR DIRECTLY TO THE UI
+            st.error(f"🔴 RapidAPI Failed: [Status {response.status_code}] {response.text}")
+            return pd.DataFrame()
             
         data = response.json()
         listings = data.get("data", {}).get("listings", []) if isinstance(data, dict) else []
+        st.info(f"*(Debug) RapidAPI successfully pulled {len(listings)} raw listings from the server.*")
         
         leads = []
         for item in listings:
@@ -81,52 +85,8 @@ def fetch_rapidapi_data(location, min_price):
                     "Price ($)": price
                 })
         return pd.DataFrame(leads)
-    except Exception:
-        return pd.DataFrame()
-
-# --- ENGINE 3: CUSTOM WEB SCRAPER ---
-@st.cache_data(ttl=3600, show_spinner=False)
-def scrape_off_market_directory(city, min_price):
-    """
-    Template for scraping local directories. 
-    Update the URL and soup.find() classes to match your target website's HTML structure.
-    """
-    url = f"https://www.example-commercial-real-estate.com/search?city={city}"
-    # Using a User-Agent header is a standard practice to identify your scraper and prevent immediate blocking by simple bot protections.
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
-    
-    try:
-        response = requests.get(url, headers=headers, timeout=15)
-        if response.status_code != 200: return pd.DataFrame()
-            
-        soup = BeautifulSoup(response.text, "html.parser")
-        leads = []
-        
-        # Replace 'listing-card' with the actual HTML class from your target site
-        listings = soup.find_all("div", class_="listing-card")
-        
-        for idx, item in enumerate(listings):
-            try:
-                # Replace 'price-text' and 'address-text' with actual HTML classes
-                price_text = item.find("span", class_="price-text").text
-                price = int(''.join(filter(str.isdigit, price_text)))
-                
-                if price >= min_price:
-                    leads.append({
-                        "Source": "Scraper (Off-Market)",
-                        "Lead ID": f"WS-{str(idx).zfill(4)}",
-                        "Address": item.find("h3", class_="address-text").text.strip(),
-                        "City": city,
-                        "State": "N/A", 
-                        "Property Type": "Commercial/Unlisted",
-                        "Price ($)": price
-                    })
-            except AttributeError:
-                # Skips cards that are missing price or address data
-                continue
-                
-        return pd.DataFrame(leads)
     except Exception as e:
+        st.error(f"🔴 RapidAPI Python Error: {e}")
         return pd.DataFrame()
 
 # --- SIDEBAR & UX CONTROLS ---
@@ -134,26 +94,25 @@ with st.sidebar:
     st.header("⚙️ Target Parameters")
     target_city = st.text_input("Target City", value="Austin")
     target_state = st.text_input("Target State (2-letter)", value="TX", max_chars=2)
-    min_price_threshold = st.number_input("Minimum Value ($)", min_value=100000, value=1850000, step=50000)
+    # DROPPED DEFAULT TO $100k TO FORCE DATA THROUGH THE PIPELINE
+    min_price_threshold = st.number_input("Minimum Value ($)", min_value=10000, value=100000, step=50000)
     st.markdown("---")
     execute_search = st.button("🚀 Run Lead Generation", use_container_width=True)
 
 # --- EXECUTION PIPELINE ---
 if execute_search:
+    st.cache_data.clear() # Forces a fresh API call for debugging
+    
     with st.spinner(f"Running Tri-Engine extraction for {target_city}, {target_state}..."):
         
-        # Execute all three data streams
         rentcast_df = fetch_rentcast_data(target_city, target_state, min_price_threshold)
         rapidapi_df = fetch_rapidapi_data(f"{target_city}, {target_state}", min_price_threshold)
-        scraper_df = scrape_off_market_directory(target_city, min_price_threshold)
         
-        # Merge all datasets
-        combined_df = pd.concat([rentcast_df, rapidapi_df, scraper_df], ignore_index=True)
+        combined_df = pd.concat([rentcast_df, rapidapi_df], ignore_index=True)
         
         if combined_df.empty:
-            st.warning("No properties found. Try adjusting criteria.")
+            st.warning("⚠️ Still empty. Look at the blue/red messages above. If there are NO red errors, the APIs are connecting successfully, but no properties match your city/state/price combo.")
         else:
-            # Deduplicate across all three sources to ensure a clean list
             combined_df = combined_df.drop_duplicates(subset=["Address"]).sort_values(by="Price ($)", ascending=False)
             
             # --- EXECUTIVE METRICS ---
@@ -164,7 +123,7 @@ if execute_search:
             
             # --- TABS ---
             st.markdown("### Actionable B2B Directory")
-            tab1, tab2, tab3, tab4 = st.tabs(["📊 Master", "🏠 RentCast", "🌐 RapidAPI", "🕷️ Scraped"])
+            tab1, tab2, tab3 = st.tabs(["📊 Master", "🏠 RentCast", "🌐 RapidAPI"])
             
             with tab1:
                 st.dataframe(combined_df.style.format({"Price ($)": "${:,.0f}"}), use_container_width=True)
@@ -172,8 +131,6 @@ if execute_search:
                 st.dataframe(combined_df[combined_df["Source"] == "RentCast API"].style.format({"Price ($)": "${:,.0f}"}), use_container_width=True)
             with tab3:
                 st.dataframe(combined_df[combined_df["Source"] == "RapidAPI (MLS)"].style.format({"Price ($)": "${:,.0f}"}), use_container_width=True)
-            with tab4:
-                st.dataframe(combined_df[combined_df["Source"] == "Scraper (Off-Market)"].style.format({"Price ($)": "${:,.0f}"}), use_container_width=True)
 
 else:
     st.info("👈 Set your parameters and click **Run Lead Generation**.")
